@@ -92,6 +92,22 @@ def nueva_posicion():
             round(5 + radio * math.sin(angulo), 2))
 
 
+def eliminar_nodo_confirmado():
+    s = st.session_state
+    if not s.get("confirmar_eliminar_ui", False):
+        return
+    quitar = s.get("quitar_ui")
+    if quitar not in s.posiciones or len(s.posiciones) <= 2:
+        return
+    del s.posiciones[quitar]
+    s.enlaces = {k: d for k, d in s.enlaces.items() if quitar not in k}
+    restantes = sorted(s.posiciones)
+    if s.origen == quitar:
+        s.origen = restantes[0]
+    if s.destino == quitar:
+        s.destino = restantes[-1]
+
+
 def reiniciar():
     s = st.session_state
     s.posiciones = dict(POS_INICIAL)
@@ -324,8 +340,8 @@ with st.sidebar:
                 st.rerun()
 
     with st.expander("🧭 Mover un router"):
-        with st.form("form_posicion"):
-            nodo_mover = st.selectbox("Router a mover", nodos)
+        nodo_mover = st.selectbox("Router a mover", nodos)
+        with st.form(f"form_posicion_{nodo_mover}"):
             px, py = s.posiciones[nodo_mover]
             x = st.number_input("Coordenada X", value=float(px), step=0.5)
             y = st.number_input("Coordenada Y", value=float(py), step=0.5)
@@ -336,18 +352,10 @@ with st.sidebar:
 
     with st.expander("🗑 Eliminar router"):
         with st.form("form_eliminar_nodo"):
-            quitar = st.selectbox("Router", nodos)
-            confirmar = st.checkbox("Confirmo que deseo eliminarlo")
-            eliminar = st.form_submit_button("Eliminar router", use_container_width=True)
-        if eliminar and confirmar and len(nodos) > 2:
-            del s.posiciones[quitar]
-            s.enlaces = {k: d for k, d in s.enlaces.items() if quitar not in k}
-            restantes = sorted(s.posiciones)
-            if s.origen == quitar:
-                s.origen = restantes[0]
-            if s.destino == quitar:
-                s.destino = restantes[-1]
-            st.rerun()
+            st.selectbox("Router", nodos, key="quitar_ui")
+            st.checkbox("Confirmo que deseo eliminarlo", key="confirmar_eliminar_ui")
+            st.form_submit_button("Eliminar router", use_container_width=True,
+                                  on_click=eliminar_nodo_confirmado)
 
     st.divider()
     st.header("5. Editar métricas de cada enlace")
@@ -357,7 +365,7 @@ with st.sidebar:
         elegido = st.selectbox("Enlace", opciones,
                               format_func=lambda e: f"{e[0]} – {e[1]}")
         d = s.enlaces[elegido]
-        with st.form("form_metricas"):
+        with st.form(f"form_metricas_{elegido[0]}_{elegido[1]}"):
             peso = st.number_input("Peso manual", 1, 100000, int(d["peso"]))
             retardo = st.number_input("Retardo (ms)", 0.01, 10000.0,
                                       float(d["retardo"]), step=1.0)
@@ -381,9 +389,8 @@ with st.sidebar:
             st.rerun()
     else:
         st.warning("No hay enlaces. Crea uno en la sección 4.")
-    if st.button("↩ Restablecer topología inicial", use_container_width=True):
-        reiniciar()
-        st.rerun()
+    st.button("↩ Restablecer topología inicial", on_click=reiniciar,
+              use_container_width=True)
 
 
 @st.fragment(run_every="1s")
