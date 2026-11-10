@@ -266,9 +266,10 @@ def panel_en_vivo():
     k3.metric("Enlaces caídos", caidos)
     k4.metric("Ciclos", st.session_state.ciclos)
 
-    st.success("🟢 Simulación activa: pesos actualizados cada segundo") if (
-        st.session_state.activo_sim
-    ) else st.info("⏸ Pausado: edita pesos o enlaces en la barra lateral")
+    if st.session_state.activo_sim:
+        st.success("🟢 Simulación activa: pesos actualizados cada segundo")
+    else:
+        st.info("⏸ Pausado: edita pesos o enlaces en la barra lateral")
 
     izquierda, derecha = st.columns([3, 1])
     with izquierda:
