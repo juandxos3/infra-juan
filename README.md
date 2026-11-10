@@ -5,6 +5,10 @@ Simulador académico de una red de **15 routers** desarrollado en **Python + Str
 ## Funciones
 
 - Selección de origen y destino.
+- **Añadir routers** desde la barra lateral (hasta 50), conectándolos a cualquier router existente.
+- **Añadir o eliminar conexiones** entre routers y definir sus costos.
+- **Eliminar routers** junto con sus conexiones, conservando el cálculo dinámico.
+- El restablecimiento regresa a la topología original de 15 routers.
 - Cálculo de las **tres rutas simples de menor costo** mediante búsqueda de costo uniforme con cola de prioridad.
 - Árbol sumidero hacia el destino utilizando el algoritmo de Dijkstra.
 - Visualización de los pesos de cada enlace y edición manual.
