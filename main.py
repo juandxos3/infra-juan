@@ -226,7 +226,8 @@ def figura(g, rutas, siguiente, vista, origen, destino):
             line=dict(color=color, width=7 if resaltado else 2,
                       dash="solid" if activo else "dash"),
             hovertemplate=detalle + "<extra></extra>", showlegend=False))
-        etiqueta = f"{costo:.1f}" if activo else "✕"
+        etiqueta = (f"P:{d['peso']}" if st.session_state.modo == "Peso manual"
+                    else f"P:{d['peso']} · C:{costo:.1f}") if activo else "✕"
         fig.add_annotation(
             x=(x1+x2)/2, y=(y1+y2)/2, text=f"<b>{etiqueta}</b>",
             showarrow=False, bgcolor="rgba(255,255,255,0.92)",
@@ -279,7 +280,7 @@ with st.sidebar:
             for k in coef:
                 coef[k] = st.slider(k, 0.0, 5.0, 1.0, 0.25, key=f"coef_{k}")
     s.coef = coef
-    st.caption("El costo mostrado sobre cada enlace corresponde al criterio elegido.")
+    st.caption("P = peso manual; C = costo efectivo según el criterio elegido.")
     st.divider()
 
     st.header("3. Simulación en tiempo real")
@@ -304,7 +305,7 @@ with st.sidebar:
         with st.form("form_nodo", clear_on_submit=False):
             nombre_sugerido = nuevo_nombre()
             nombre = st.text_input("Nombre del nuevo router", value=nombre_sugerido,
-                                   max_chars=16)
+                                   max_chars=16, key=f"nombre_nuevo_{len(nodos)}")
             conectar = st.selectbox("Conectarlo inicialmente con", nodos)
             peso_nuevo = st.number_input("Peso del enlace inicial", 1, 100000, 40)
             crear_nodo = st.form_submit_button("Añadir router", use_container_width=True)
@@ -365,7 +366,7 @@ with st.sidebar:
         elegido = st.selectbox("Enlace", opciones,
                               format_func=lambda e: f"{e[0]} – {e[1]}")
         d = s.enlaces[elegido]
-        with st.form(f"form_metricas_{elegido[0]}_{elegido[1]}"):
+        with st.form(f"form_metricas_{elegido[0]}_{elegido[1]}_{s.ciclos}"):
             peso = st.number_input("Peso manual", 1, 100000, int(d["peso"]))
             retardo = st.number_input("Retardo (ms)", 0.01, 10000.0,
                                       float(d["retardo"]), step=1.0)
