@@ -7,7 +7,7 @@ import streamlit as st
 
 st.set_page_config(page_title="Simulador Sink Tree", page_icon="🌐", layout="wide")
 
-POS = {
+POS_INICIAL = {
     "A": (1, 8), "B": (5, 9), "C": (9, 8), "D": (3, 6),
     "E": (6, 6), "F": (1, 5), "G": (2, 4), "H": (4, 3),
     "I": (5, 5), "J": (8, 5), "K": (1, 2), "L": (3, 2),
@@ -38,8 +38,14 @@ def nueva_red(escenario="Carga variable"):
 
 def iniciar():
     s = st.session_state
+    if "posiciones" not in s:
+        s.posiciones = dict(POS_INICIAL)
     if "enlaces" not in s:
         s.enlaces = nueva_red()
+    if "origen_ui" not in s:
+        s.origen_ui = "H"
+    if "destino_ui" not in s:
+        s.destino_ui = "B"
     if "activo_sim" not in s:
         s.activo_sim = False
     if "ciclos" not in s:
@@ -52,6 +58,89 @@ def iniciar():
         s.peso_ui = s.enlaces[clave("A", "B")]["peso"]
     if "fijo_ui" not in s:
         s.fijo_ui = False
+
+
+
+def nombre_disponible():
+    """Nombres P...Z, AA...AZ, BA... para los routers adicionales."""
+    for i in range(15, 500):
+        n = i
+        nombre = ""
+        while True:
+            nombre = chr(65 + n % 26) + nombre
+            n = n // 26 - 1
+            if n < 0:
+                break
+        if nombre not in st.session_state.posiciones:
+            return nombre
+    raise ValueError("Límite de routers alcanzado")
+
+
+def colocar_router(indice):
+    """Coloca nodos nuevos en anillos fuera de la topología inicial."""
+    extra = indice - len(POS_INICIAL)
+    ring = extra // 14
+    item = extra % 14
+    angulo = 2 * math.pi * item / 14
+    radio = 6.2 + ring * 2.2
+    return (5.5 + radio * math.cos(angulo), 5 + radio * math.sin(angulo))
+
+
+def elegir_enlace_valido():
+    s = st.session_state
+    opciones = [f"{a} - {b}" for a, b in sorted(s.enlaces)]
+    if opciones and s.enlace_ui not in opciones:
+        s.enlace_ui = opciones[0]
+    if opciones:
+        sincronizar_editor()
+
+
+def agregar_router():
+    s = st.session_state
+    if len(s.posiciones) >= 50:
+        return
+    nombre = nombre_disponible()
+    s.posiciones[nombre] = colocar_router(len(s.posiciones))
+    objetivo = s.conectar_a_ui
+    peso = int(s.peso_nodo_ui)
+    s.enlaces[clave(nombre, objetivo)] = {
+        "peso": peso, "activo": True, "fijo": False
+    }
+    elegir_enlace_valido()
+
+
+def eliminar_router():
+    s = st.session_state
+    nodo = s.eliminar_nodo_ui
+    if len(s.posiciones) <= 2:
+        return
+    del s.posiciones[nodo]
+    s.enlaces = {k: v for k, v in s.enlaces.items() if nodo not in k}
+    nodos = sorted(s.posiciones)
+    if s.origen_ui == nodo:
+        s.origen_ui = nodos[0]
+    if s.destino_ui == nodo:
+        s.destino_ui = nodos[-1]
+    elegir_enlace_valido()
+
+
+def agregar_conexion():
+    s = st.session_state
+    a, b = s.extremo_a_ui, s.extremo_b_ui
+    if a != b:
+        s.enlaces[clave(a, b)] = {
+            "peso": int(s.peso_conexion_ui),
+            "activo": True,
+            "fijo": False
+        }
+        elegir_enlace_valido()
+
+
+def borrar_conexion():
+    s = st.session_state
+    if s.enlaces:
+        s.enlaces.pop(enlace_actual(), None)
+        elegir_enlace_valido()
 
 
 def enlace_actual():
@@ -83,9 +172,14 @@ def cambiar_enlace():
 def reiniciar():
     s = st.session_state
     s.enlaces = nueva_red(s.escenario_ui)
+    s.posiciones = dict(POS_INICIAL)
+    if s.origen_ui not in s.posiciones:
+        s.origen_ui = "H"
+    if s.destino_ui not in s.posiciones:
+        s.destino_ui = "B"
     s.ciclos = 0
     s.historial = []
-    sincronizar_editor()
+    elegir_enlace_valido()
 
 
 def pausar():
@@ -96,7 +190,7 @@ def pausar():
 def grafo():
     g = {n: [] for n in POS}
     for (a, b), dato in st.session_state.enlaces.items():
-        if dato["activo"]:
+        if dato["activo"] and a in g and b in g:
             g[a].append((b, dato["peso"]))
             g[b].append((a, dato["peso"]))
     for vecinos in g.values():
@@ -207,23 +301,26 @@ def dibujar(rutas, siguientes, vista, origen, destino):
             marker=dict(size=36, color=color, line=dict(color="white", width=2)),
             hovertemplate=f"Router {n}<extra></extra>", showlegend=False,
         ))
+    xs = [x for x, _ in POS.values()]
+    ys = [y for _, y in POS.values()]
     fig.update_layout(
-        height=610, margin=dict(l=8, r=8, t=8, b=8),
-        xaxis=dict(visible=False, range=[0, 11]),
-        yaxis=dict(visible=False, range=[0, 10], scaleanchor="x", scaleratio=1),
+        height=640, margin=dict(l=8, r=8, t=8, b=8),
+        xaxis=dict(visible=False, range=[min(xs)-1, max(xs)+1]),
+        yaxis=dict(visible=False, range=[min(ys)-1, max(ys)+1], scaleanchor="x", scaleratio=1),
         plot_bgcolor="white", paper_bgcolor="white",
     )
     return fig
 
 
 iniciar()
+POS = st.session_state.posiciones
 st.title("🌐 Simulador de rutas óptimas y Sink Tree")
-st.caption("15 routers · Pesos por enlace · Tres rutas mínimas · Actualización periódica")
+st.caption("Routers ampliables · Pesos editables · Tres rutas mínimas · Sink Tree en vivo")
 
 with st.sidebar:
     st.header("Configuración")
-    origen = st.selectbox("Origen", sorted(POS), index=sorted(POS).index("H"))
-    destino = st.selectbox("Destino", sorted(POS), index=sorted(POS).index("B"))
+    origen = st.selectbox("Origen", sorted(POS), key="origen_ui")
+    destino = st.selectbox("Destino", sorted(POS), key="destino_ui")
     vista = st.selectbox("Visualización",
                         ["Tres rutas", "Primaria", "Secundaria",
                          "Terciaria", "Árbol sumidero"])
@@ -235,17 +332,50 @@ with st.sidebar:
     st.button("Generar nuevos pesos", on_click=reiniciar, use_container_width=True)
     st.caption("Son pesos artificiales: no proceden de routers físicos.")
     st.divider()
+    st.subheader("➕ Ampliar la red")
+    st.caption("Añade routers y conéctalos a los existentes. Se asignan letras automáticamente.")
+    st.selectbox("Conectar nuevo router con", sorted(POS), key="conectar_a_ui")
+    st.number_input("Peso inicial del nuevo enlace", min_value=1,
+                    max_value=100000, value=40, key="peso_nodo_ui")
+    st.button("➕ Añadir router", on_click=agregar_router,
+              disabled=len(POS) >= 50, use_container_width=True)
+    st.caption(f"Routers actuales: {len(POS)} / 50")
+
+    st.subheader("Crear conexión entre routers")
+    st.selectbox("Router A", sorted(POS), key="extremo_a_ui")
+    st.selectbox("Router B", sorted(POS), index=min(1, len(POS)-1),
+                 key="extremo_b_ui")
+    st.number_input("Peso de la conexión nueva", min_value=1,
+                    max_value=100000, value=50, key="peso_conexion_ui")
+    if st.session_state.extremo_a_ui == st.session_state.extremo_b_ui:
+        st.caption("Selecciona dos routers distintos.")
+    st.button("🔗 Añadir / actualizar conexión", on_click=agregar_conexion,
+              disabled=(st.session_state.extremo_a_ui == st.session_state.extremo_b_ui),
+              use_container_width=True)
+
+    with st.expander("Eliminar router"):
+        st.selectbox("Router que deseas quitar", sorted(POS), key="eliminar_nodo_ui")
+        st.button("🗑 Eliminar router y sus enlaces", on_click=eliminar_router,
+                  disabled=len(POS) <= 2, use_container_width=True)
+
+    st.divider()
     st.subheader("Editar enlace")
-    st.selectbox("Conexión", [f"{a} - {b}" for a, b in sorted(st.session_state.enlaces)],
-                 key="enlace_ui", on_change=sincronizar_editor)
-    dato = st.session_state.enlaces[enlace_actual()]
-    st.number_input("Peso", min_value=1, max_value=100000, step=1,
-                    key="peso_ui", on_change=guardar_peso,
-                    disabled=st.session_state.activo_sim)
-    st.checkbox("Fijar este peso", key="fijo_ui", on_change=guardar_bloqueo)
-    st.button("Reparar enlace" if not dato["activo"] else "Dañar enlace",
-              on_click=cambiar_enlace, use_container_width=True)
-    st.button("Restablecer red", on_click=reiniciar, use_container_width=True)
+    if st.session_state.enlaces:
+        st.selectbox("Conexión", [f"{a} - {b}" for a, b in sorted(st.session_state.enlaces)],
+                     key="enlace_ui", on_change=sincronizar_editor)
+        dato = st.session_state.enlaces[enlace_actual()]
+        st.number_input("Peso", min_value=1, max_value=100000, step=1,
+                        key="peso_ui", on_change=guardar_peso,
+                        disabled=st.session_state.activo_sim)
+        st.checkbox("Fijar este peso", key="fijo_ui", on_change=guardar_bloqueo)
+        st.button("Reparar enlace" if not dato["activo"] else "Dañar enlace",
+                  on_click=cambiar_enlace, use_container_width=True)
+        st.button("🗑 Borrar esta conexión", on_click=borrar_conexion,
+                  use_container_width=True)
+    else:
+        st.warning("No hay enlaces. Crea una conexión para empezar.")
+    st.button("Restablecer red inicial (15 routers)", on_click=reiniciar,
+              use_container_width=True)
     st.caption("Pausa para editar. Un peso fijo no varía en la simulación.")
 
 
