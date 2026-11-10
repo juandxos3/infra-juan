@@ -437,8 +437,10 @@ def panel():
             for (a, b), d in sorted(s.enlaces.items())
         ], hide_index=True, height=300)
 
-    t1, t2, t3 = st.tabs(["🌳 Árbol sumidero", "📐 Comparación de rutas",
-                           "🧠 Teoría y cálculo"])
+    t1, t2, t3, t4 = st.tabs([
+        "🌳 Árbol sumidero", "📐 Comparación de rutas",
+        "🧠 Teoría y cálculo", "📘 Fórmulas de grafos"
+    ])
     with t1:
         st.write(f"**Raíz del árbol: {s.destino}.** Cada router alcanzable tiene "
                  "un siguiente salto hacia ese destino, calculado con Dijkstra.")
@@ -476,6 +478,49 @@ def panel():
             "banda mínimo de la ruta. Los valores aleatorios representan "
             "escenarios educativos, no mediciones reales de una red."
         )
+
+    with t4:
+        st.subheader("Fórmulas fundamentales de teoría de grafos")
+        st.markdown("**1. Representación matemática de la red**")
+        st.latex(r"G=(V,E)")
+        st.write("**V** es el conjunto de routers (vértices) y **E** es "
+                 "el conjunto de conexiones (aristas). El simulador modela "
+                 "enlaces no dirigidos; cada enlace tiene métricas configurables.")
+        cantidad_nodos = len(s.posiciones)
+        cantidad_enlaces = len(s.enlaces)
+        st.write(f"**Red actual:** |V| = {cantidad_nodos} routers y "
+                 f"|E| = {cantidad_enlaces} conexiones registradas.")
+        st.markdown("**2. Costo total de una ruta**")
+        st.latex(r"C(P)=\sum_{(u,v)\in P}c(u,v)")
+        st.write("El programa suma los costos efectivos de los enlaces del camino. "
+                 "Las tres rutas mostradas se ordenan de menor a mayor costo.")
+        if rutas:
+            c0, p0 = rutas[0]
+            componentes = [g[a][b]["weight"] for a, b in zip(p0, p0[1:])]
+            st.write(f"**Ejemplo con tus datos actuales:** {' → '.join(p0)}")
+            st.write(" + ".join(f"{c:.2f}" for c in componentes)
+                     + f" = **{c0:.2f}**")
+        st.markdown("**3. Número de saltos**")
+        st.latex(r"H(P)=|P|-1")
+        st.write("Un salto equivale a atravesar una conexión entre dos routers.")
+        st.markdown("**4. Caminos mínimos hacia el destino (Dijkstra / Sink Tree)**")
+        st.latex(r"d(t)=0,\qquad d(v)=\min_{u\in N(v)}\left[c(v,u)+d(u)\right]")
+        st.write(f"En esta simulación el destino es **{s.destino}**. "
+                 "Cada nodo alcanzable apunta a un vecino cuya ruta "
+                 "acumulada hasta ese destino tiene el menor costo.")
+        st.markdown("**5. Costo adaptativo usado por el programa**")
+        st.latex(
+            r"c(u,v)=w_s+w_p\frac{p}{100}"
+            r"+w_r\frac{r}{50}+w_b\frac{100}{b}"
+            r"+w_l\frac{\ell}{2}+w_j\frac{j}{10}"
+        )
+        st.write("**p**: peso manual; **r**: retardo en ms; **b**: ancho de "
+                 "banda en Mbps; **ℓ**: pérdida porcentual; **j**: jitter "
+                 "en ms. Los coeficientes **w** indican la importancia "
+                 "de cada métrica y se modifican en «Criterio de enrutamiento».")
+        st.caption("La fórmula adaptativa es un modelo educativo de costo aditivo, "
+                   "no un protocolo de enrutamiento real. Al seleccionar otra "
+                   "métrica se usa su fórmula específica.")
 
     if s.en_vivo:
         s.historial.append({"Ciclo": s.ciclos,
