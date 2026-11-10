@@ -1,11 +1,14 @@
-import heapq
+"""Laboratorio interactivo de enrutamiento adaptativo y árboles sumidero."""
+import itertools
 import math
 import random
+import string
 
+import networkx as nx
 import plotly.graph_objects as go
 import streamlit as st
 
-st.set_page_config(page_title="Simulador Sink Tree", page_icon="🌐", layout="wide")
+st.set_page_config(page_title="Laboratorio Sink Tree", page_icon="🌐", layout="wide")
 
 POS_INICIAL = {
     "A": (1, 8), "B": (5, 9), "C": (9, 8), "D": (3, 6),
@@ -13,27 +16,42 @@ POS_INICIAL = {
     "I": (5, 5), "J": (8, 5), "K": (1, 2), "L": (3, 2),
     "M": (5, 1), "N": (9, 3), "O": (10, 1),
 }
-LINKS = [
+ENLACES_INICIALES = [
     ("A", "B"), ("B", "C"), ("A", "D"), ("A", "F"),
     ("D", "G"), ("D", "H"), ("D", "I"), ("F", "K"),
     ("K", "L"), ("G", "L"), ("L", "M"), ("H", "E"),
     ("E", "J"), ("H", "O"), ("O", "N"), ("N", "J"),
     ("N", "M"), ("I", "J"), ("I", "C"), ("J", "C"),
 ]
+ESCENARIOS = {
+    "Carga baja": {"peso": (5, 40), "retardo": (2, 18),
+                   "ancho": (150, 1000), "perdida": (0.0, 0.3), "jitter": (0.2, 3)},
+    "Carga variable": {"peso": (20, 150), "retardo": (10, 85),
+                       "ancho": (30, 450), "perdida": (0.0, 2.5), "jitter": (1, 20)},
+    "Congestión": {"peso": (100, 300), "retardo": (65, 250),
+                   "ancho": (2, 80), "perdida": (1, 12), "jitter": (10, 65)},
+}
+MODOS = ["Adaptativo", "Peso manual", "Saltos", "Retardo", "Ancho de banda",
+         "Pérdida de paquetes", "Jitter"]
 COLORES = ["#e5484d", "#287bd3", "#1f9d6a"]
-RANGOS = {"Carga baja": (10, 55), "Carga variable": (35, 140),
-          "Congestión": (110, 300)}
+MAX_NODOS = 100
 
 
 def clave(a, b):
     return tuple(sorted((a, b)))
 
 
-def nueva_red(escenario="Carga variable"):
-    minimo, maximo = RANGOS[escenario]
-    return {clave(a, b): {"peso": random.randint(minimo, maximo),
-                           "activo": True, "fijo": False}
-            for a, b in LINKS}
+def metricas_aleatorias(escenario):
+    r = ESCENARIOS[escenario]
+    return {
+        "peso": random.randint(*r["peso"]),
+        "retardo": round(random.uniform(*r["retardo"]), 2),
+        "ancho": round(random.uniform(*r["ancho"]), 2),
+        "perdida": round(random.uniform(*r["perdida"]), 2),
+        "jitter": round(random.uniform(*r["jitter"]), 2),
+        "activo": True,
+        "fijo": False,
+    }
 
 
 def iniciar():
@@ -41,411 +59,425 @@ def iniciar():
     if "posiciones" not in s:
         s.posiciones = dict(POS_INICIAL)
     if "enlaces" not in s:
-        s.enlaces = nueva_red()
-    if "origen_ui" not in s:
-        s.origen_ui = "H"
-    if "destino_ui" not in s:
-        s.destino_ui = "B"
-    if "activo_sim" not in s:
-        s.activo_sim = False
+        s.enlaces = {clave(a, b): metricas_aleatorias("Carga variable")
+                     for a, b in ENLACES_INICIALES}
+    if "origen" not in s:
+        s.origen = "H"
+    if "destino" not in s:
+        s.destino = "B"
+    if "en_vivo" not in s:
+        s.en_vivo = False
     if "ciclos" not in s:
         s.ciclos = 0
     if "historial" not in s:
         s.historial = []
-    if "enlace_ui" not in s:
-        s.enlace_ui = "A - B"
-    if "peso_ui" not in s:
-        s.peso_ui = s.enlaces[clave("A", "B")]["peso"]
-    if "fijo_ui" not in s:
-        s.fijo_ui = False
 
 
-
-def nombre_disponible():
-    """Nombres P...Z, AA...AZ, BA... para los routers adicionales."""
-    for i in range(15, 500):
-        n = i
-        nombre = ""
-        while True:
-            nombre = chr(65 + n % 26) + nombre
-            n = n // 26 - 1
-            if n < 0:
-                break
-        if nombre not in st.session_state.posiciones:
-            return nombre
-    raise ValueError("Límite de routers alcanzado")
+def nuevo_nombre():
+    usados = st.session_state.posiciones
+    for longitud in range(1, 4):
+        for letras in itertools.product(string.ascii_uppercase, repeat=longitud):
+            nombre = "".join(letras)
+            if nombre not in usados:
+                return nombre
+    raise ValueError("No hay nombres disponibles")
 
 
-def colocar_router(indice):
-    """Coloca nodos nuevos en anillos fuera de la topología inicial."""
-    extra = indice - len(POS_INICIAL)
-    ring = extra // 14
-    item = extra % 14
-    angulo = 2 * math.pi * item / 14
-    radio = 6.2 + ring * 2.2
-    return (5.5 + radio * math.cos(angulo), 5 + radio * math.sin(angulo))
-
-
-def elegir_enlace_valido():
-    s = st.session_state
-    opciones = [f"{a} - {b}" for a, b in sorted(s.enlaces)]
-    if opciones and s.enlace_ui not in opciones:
-        s.enlace_ui = opciones[0]
-    if opciones:
-        sincronizar_editor()
-
-
-def agregar_router():
-    s = st.session_state
-    if len(s.posiciones) >= 50:
-        return
-    nombre = nombre_disponible()
-    s.posiciones[nombre] = colocar_router(len(s.posiciones))
-    objetivo = s.conectar_a_ui
-    peso = int(s.peso_nodo_ui)
-    s.enlaces[clave(nombre, objetivo)] = {
-        "peso": peso, "activo": True, "fijo": False
-    }
-    elegir_enlace_valido()
-
-
-def eliminar_router():
-    s = st.session_state
-    nodo = s.eliminar_nodo_ui
-    if len(s.posiciones) <= 2:
-        return
-    del s.posiciones[nodo]
-    s.enlaces = {k: v for k, v in s.enlaces.items() if nodo not in k}
-    nodos = sorted(s.posiciones)
-    if s.origen_ui == nodo:
-        s.origen_ui = nodos[0]
-    if s.destino_ui == nodo:
-        s.destino_ui = nodos[-1]
-    elegir_enlace_valido()
-
-
-def agregar_conexion():
-    s = st.session_state
-    a, b = s.extremo_a_ui, s.extremo_b_ui
-    if a != b:
-        s.enlaces[clave(a, b)] = {
-            "peso": int(s.peso_conexion_ui),
-            "activo": True,
-            "fijo": False
-        }
-        elegir_enlace_valido()
-
-
-def borrar_conexion():
-    s = st.session_state
-    if s.enlaces:
-        s.enlaces.pop(enlace_actual(), None)
-        elegir_enlace_valido()
-
-
-def enlace_actual():
-    a, b = st.session_state.enlace_ui.split(" - ")
-    return clave(a, b)
-
-
-# Los callbacks modifican widgets ANTES de instanciarlos: evita
-# StreamlitWidgetAlreadyInstantiatedError.
-def sincronizar_editor():
-    dato = st.session_state.enlaces[enlace_actual()]
-    st.session_state.peso_ui = dato["peso"]
-    st.session_state.fijo_ui = dato["fijo"]
-
-
-def guardar_peso():
-    st.session_state.enlaces[enlace_actual()]["peso"] = int(st.session_state.peso_ui)
-
-
-def guardar_bloqueo():
-    st.session_state.enlaces[enlace_actual()]["fijo"] = bool(st.session_state.fijo_ui)
-
-
-def cambiar_enlace():
-    dato = st.session_state.enlaces[enlace_actual()]
-    dato["activo"] = not dato["activo"]
+def nueva_posicion():
+    posiciones = st.session_state.posiciones
+    n = len(posiciones) - len(POS_INICIAL)
+    angulo = n * 2.399963229728653
+    radio = 6.5 + 1.2 * math.sqrt(max(0, n))
+    return (round(5 + radio * math.cos(angulo), 2),
+            round(5 + radio * math.sin(angulo), 2))
 
 
 def reiniciar():
     s = st.session_state
-    s.enlaces = nueva_red(s.escenario_ui)
     s.posiciones = dict(POS_INICIAL)
-    if s.origen_ui not in s.posiciones:
-        s.origen_ui = "H"
-    if s.destino_ui not in s.posiciones:
-        s.destino_ui = "B"
+    s.enlaces = {clave(a, b): metricas_aleatorias(s.escenario)
+                 for a, b in ENLACES_INICIALES}
+    s.origen, s.destino = "H", "B"
     s.ciclos = 0
     s.historial = []
-    elegir_enlace_valido()
 
 
-def pausar():
-    if not st.session_state.activo_sim:
-        sincronizar_editor()
+def peso_efectivo(d, modo, coef):
+    """Costo positivo aditivo para Dijkstra y las tres rutas."""
+    if modo == "Peso manual":
+        return float(d["peso"])
+    if modo == "Saltos":
+        return 1.0
+    if modo == "Retardo":
+        return float(d["retardo"])
+    if modo == "Ancho de banda":
+        return 100.0 / max(0.1, float(d["ancho"]))
+    if modo == "Pérdida de paquetes":
+        return 1.0 + float(d["perdida"])
+    if modo == "Jitter":
+        return 1.0 + float(d["jitter"])
+    return (
+        coef["Saltos"] * 1.0
+        + coef["Peso"] * d["peso"] / 100.0
+        + coef["Retardo"] * d["retardo"] / 50.0
+        + coef["Ancho"] * 100.0 / max(0.1, d["ancho"])
+        + coef["Pérdida"] * d["perdida"] / 2.0
+        + coef["Jitter"] * d["jitter"] / 10.0
+    )
 
 
-def grafo():
-    g = {n: [] for n in POS}
-    for (a, b), dato in st.session_state.enlaces.items():
-        if dato["activo"] and a in g and b in g:
-            g[a].append((b, dato["peso"]))
-            g[b].append((a, dato["peso"]))
-    for vecinos in g.values():
-        vecinos.sort()
+def construir_grafo(modo, coef):
+    g = nx.Graph()
+    g.add_nodes_from(st.session_state.posiciones)
+    for (a, b), d in st.session_state.enlaces.items():
+        if d["activo"] and a in g and b in g:
+            g.add_edge(a, b, weight=peso_efectivo(d, modo, coef))
     return g
 
 
-def tres_rutas(g, origen, destino):
-    """Búsqueda de costo uniforme: 3 caminos SIMPLES de menor suma de pesos."""
-    cola = [(0, (origen,))]
-    soluciones, pasos = [], []
-    numero = 0
-    while cola and len(soluciones) < 3:
-        costo, camino = heapq.heappop(cola)
-        numero += 1
-        if len(pasos) < 180:
-            pasos.append({"Paso": numero, "Decisión": "Extraer menor costo",
-                          "Camino": " → ".join(camino), "Costo": costo})
-        if camino[-1] == destino:
-            soluciones.append((costo, camino))
-            if len(pasos) < 180:
-                pasos.append({"Paso": numero, "Decisión": "Ruta encontrada",
-                              "Camino": " → ".join(camino), "Costo": costo})
-            continue
-        for vecino, peso in g[camino[-1]]:
-            if vecino not in camino:
-                nuevo = camino + (vecino,)
-                heapq.heappush(cola, (costo + peso, nuevo))
-                if len(pasos) < 180:
-                    pasos.append({"Paso": numero, "Decisión": f"Extender (+{peso})",
-                                  "Camino": " → ".join(nuevo), "Costo": costo + peso})
-    return soluciones, pasos
+def calcular_rutas(g, origen, destino):
+    if origen == destino:
+        return [(0.0, [origen])]
+    if not nx.has_path(g, origen, destino):
+        return []
+    # Yen (NetworkX): genera caminos simples en orden de costo; solo pedimos tres.
+    generador = nx.shortest_simple_paths(g, origen, destino, weight="weight")
+    resultado = []
+    for camino in itertools.islice(generador, 3):
+        costo = sum(g[a][b]["weight"] for a, b in zip(camino, camino[1:]))
+        resultado.append((costo, camino))
+    return resultado
 
 
-def dijkstra(g, destino):
-    """Distancias mínimas hacia la raíz y siguiente salto coherente sin bucles."""
-    dist = {n: math.inf for n in g}
-    siguiente = {}
-    dist[destino] = 0
-    cola = [(0, destino)]
-    while cola:
-        d, actual = heapq.heappop(cola)
-        if d != dist[actual]:
-            continue
-        for vecino, peso in g[actual]:
-            nuevo = d + peso
-            if nuevo < dist[vecino]:
-                dist[vecino] = nuevo
-                siguiente[vecino] = actual
-                heapq.heappush(cola, (nuevo, vecino))
-            elif nuevo == dist[vecino] and actual < siguiente.get(vecino, "~"):
-                siguiente[vecino] = actual
+def arbol_sumidero(g, destino):
+    # Dijkstra desde el destino en grafo no dirigido.
+    dist, caminos = nx.single_source_dijkstra(g, destino, weight="weight")
+    siguiente = {n: camino[-2] for n, camino in caminos.items() if len(camino) > 1}
     return dist, siguiente
 
 
-def variar_pesos(variacion):
-    for dato in st.session_state.enlaces.values():
-        if dato["activo"] and not dato["fijo"]:
-            dato["peso"] = min(100000, max(1, dato["peso"] +
-                                            random.randint(-variacion, variacion)))
+def actualizar_escenario(escenario, intensidad):
+    """Perturba retardo, capacidad, pérdida, jitter y peso de cada enlace."""
+    for d in st.session_state.enlaces.values():
+        if not d["activo"] or d["fijo"]:
+            continue
+        base = metricas_aleatorias(escenario)
+        factor = intensidad / 100.0
+        for campo in ("peso", "retardo", "ancho", "perdida", "jitter"):
+            anterior = float(d[campo])
+            objetivo = float(base[campo])
+            nuevo = anterior * (1 - factor) + objetivo * factor
+            if campo == "peso":
+                d[campo] = max(1, round(nuevo))
+            elif campo == "ancho":
+                d[campo] = round(max(0.1, nuevo), 2)
+            elif campo == "perdida":
+                d[campo] = round(min(100, max(0, nuevo)), 2)
+            else:
+                d[campo] = round(max(0.01, nuevo), 2)
 
 
-def dibujar(rutas, siguientes, vista, origen, destino):
+def figura(g, rutas, siguiente, vista, origen, destino):
+    posiciones = st.session_state.posiciones
     fig = go.Figure()
-    marcado = {}
+    marcados = {}
     if vista == "Árbol sumidero":
-        marcado = {clave(a, b): "#9850d8" for a, b in siguientes.items()}
+        marcados = {clave(a, b): "#9650d6" for a, b in siguiente.items()}
     else:
         opciones = {"Tres rutas": [0, 1, 2], "Primaria": [0],
                     "Secundaria": [1], "Terciaria": [2]}
         for i in reversed(opciones[vista]):
             if i < len(rutas):
-                camino = rutas[i][1]
-                for a, b in zip(camino, camino[1:]):
-                    marcado[clave(a, b)] = COLORES[i]
+                for a, b in zip(rutas[i][1], rutas[i][1][1:]):
+                    marcados[clave(a, b)] = COLORES[i]
 
-    for (a, b), dato in sorted(st.session_state.enlaces.items()):
-        x1, y1 = POS[a]
-        x2, y2 = POS[b]
-        destacado = (a, b) in marcado and dato["activo"]
-        color = marcado[(a, b)] if destacado else (
-            "#cbd5e1" if dato["activo"] else "#94a3b8"
-        )
+    for (a, b), d in sorted(st.session_state.enlaces.items()):
+        if a not in posiciones or b not in posiciones:
+            continue
+        x1, y1 = posiciones[a]
+        x2, y2 = posiciones[b]
+        activo = d["activo"]
+        resaltado = activo and clave(a, b) in marcados
+        color = marcados[clave(a, b)] if resaltado else (
+            "#c5cedb" if activo else "#a6acb7")
+        costo = peso_efectivo(d, st.session_state.modo, st.session_state.coef)
+        detalle = (f"{a}–{b}<br>Peso: {d['peso']}<br>"
+                   f"Retardo: {d['retardo']} ms<br>Ancho: {d['ancho']} Mbps<br>"
+                   f"Pérdida: {d['perdida']}%<br>Jitter: {d['jitter']} ms<br>"
+                   f"Costo según criterio: {costo:.2f}")
         fig.add_trace(go.Scatter(
             x=[x1, x2], y=[y1, y2], mode="lines",
-            line=dict(color=color, width=7 if destacado else 2,
-                      dash="solid" if dato["activo"] else "dash"),
-            hovertemplate=f"{a}–{b} · Peso: {dato['peso']}<extra></extra>",
-            showlegend=False,
-        ))
-        etiqueta = str(dato["peso"]) if dato["activo"] else "✕"
-        if dato["fijo"]:
-            etiqueta += " 🔒"
+            line=dict(color=color, width=7 if resaltado else 2,
+                      dash="solid" if activo else "dash"),
+            hovertemplate=detalle + "<extra></extra>", showlegend=False))
+        etiqueta = f"{costo:.1f}" if activo else "✕"
         fig.add_annotation(
             x=(x1+x2)/2, y=(y1+y2)/2, text=f"<b>{etiqueta}</b>",
-            showarrow=False, bgcolor="rgba(255,255,255,0.95)",
-            bordercolor="#cbd5e1", borderwidth=1, font=dict(size=12),
-        )
+            showarrow=False, bgcolor="rgba(255,255,255,0.92)",
+            font=dict(color="#172a40", size=11), bordercolor="#cbd5e1",
+            borderwidth=1, borderpad=2)
 
-    for n, (x, y) in POS.items():
-        color = "#e8a13b" if n == origen else (
-            "#9349c9" if n == destino else "#216bad"
-        )
+    for n, (x, y) in posiciones.items():
+        color = "#e69d38" if n == origen else (
+            "#9350cc" if n == destino else "#206bab")
         fig.add_trace(go.Scatter(
             x=[x], y=[y], mode="markers+text", text=[n],
-            textposition="middle center",
-            textfont=dict(color="white", size=14),
-            marker=dict(size=36, color=color, line=dict(color="white", width=2)),
-            hovertemplate=f"Router {n}<extra></extra>", showlegend=False,
-        ))
-    xs = [x for x, _ in POS.values()]
-    ys = [y for _, y in POS.values()]
+            textposition="middle center", textfont=dict(color="white", size=11),
+            marker=dict(size=32, color=color, line=dict(color="white", width=2)),
+            hovertemplate=f"Router {n}<extra></extra>", showlegend=False))
+    xs = [p[0] for p in posiciones.values()]
+    ys = [p[1] for p in posiciones.values()]
     fig.update_layout(
-        height=640, margin=dict(l=8, r=8, t=8, b=8),
-        xaxis=dict(visible=False, range=[min(xs)-1, max(xs)+1]),
-        yaxis=dict(visible=False, range=[min(ys)-1, max(ys)+1], scaleanchor="x", scaleratio=1),
-        plot_bgcolor="white", paper_bgcolor="white",
-    )
+        height=650, margin=dict(l=5, r=5, t=5, b=5),
+        xaxis=dict(visible=False, range=[min(xs)-1.5, max(xs)+1.5]),
+        yaxis=dict(visible=False, range=[min(ys)-1.5, max(ys)+1.5],
+                   scaleanchor="x", scaleratio=1),
+        plot_bgcolor="white", paper_bgcolor="white", uirevision="red")
     return fig
 
 
 iniciar()
-POS = st.session_state.posiciones
-st.title("🌐 Simulador de rutas óptimas y Sink Tree")
-st.caption("Routers ampliables · Pesos editables · Tres rutas mínimas · Sink Tree en vivo")
+s = st.session_state
+st.title("🌐 Laboratorio de enrutamiento adaptativo y Sink Tree")
+st.caption("Grafo editable · Tres rutas de costo mínimo · Dijkstra · Simulación de tráfico")
 
 with st.sidebar:
-    st.header("Configuración")
-    origen = st.selectbox("Origen", sorted(POS), key="origen_ui")
-    destino = st.selectbox("Destino", sorted(POS), key="destino_ui")
-    vista = st.selectbox("Visualización",
-                        ["Tres rutas", "Primaria", "Secundaria",
-                         "Terciaria", "Árbol sumidero"])
+    st.header("1. Origen y destino")
+    nodos = sorted(s.posiciones)
+    if s.origen not in nodos:
+        s.origen = nodos[0]
+    if s.destino not in nodos:
+        s.destino = nodos[-1]
+    st.selectbox("Origen", nodos, key="origen")
+    st.selectbox("Destino (raíz del Sink Tree)", nodos, key="destino")
+    vista = st.selectbox("Visualización", ["Tres rutas", "Primaria",
+                                          "Secundaria", "Terciaria", "Árbol sumidero"])
     st.divider()
-    st.subheader("Simulación")
-    st.selectbox("Escenario inicial", list(RANGOS), index=1, key="escenario_ui")
-    variacion = st.slider("Variación máxima por segundo", 1, 100, 15)
-    st.toggle("Activar simulación automática", key="activo_sim", on_change=pausar)
-    st.button("Generar nuevos pesos", on_click=reiniciar, use_container_width=True)
-    st.caption("Son pesos artificiales: no proceden de routers físicos.")
+
+    st.header("2. Criterio de enrutamiento")
+    modo = st.selectbox("Optimizar según", MODOS, key="modo")
+    coef = {"Saltos": 1.0, "Peso": 1.0, "Retardo": 1.0,
+            "Ancho": 1.0, "Pérdida": 1.0, "Jitter": 1.0}
+    if modo == "Adaptativo":
+        with st.expander("⚖️ Importancia de cada variable", expanded=False):
+            for k in coef:
+                coef[k] = st.slider(k, 0.0, 5.0, 1.0, 0.25, key=f"coef_{k}")
+    s.coef = coef
+    st.caption("El costo mostrado sobre cada enlace corresponde al criterio elegido.")
     st.divider()
-    st.subheader("➕ Ampliar la red")
-    st.caption("Añade routers y conéctalos a los existentes. Se asignan letras automáticamente.")
-    st.selectbox("Conectar nuevo router con", sorted(POS), key="conectar_a_ui")
-    st.number_input("Peso inicial del nuevo enlace", min_value=1,
-                    max_value=100000, value=40, key="peso_nodo_ui")
-    st.button("➕ Añadir router", on_click=agregar_router,
-              disabled=len(POS) >= 50, use_container_width=True)
-    st.caption(f"Routers actuales: {len(POS)} / 50")
 
-    st.subheader("Crear conexión entre routers")
-    st.selectbox("Router A", sorted(POS), key="extremo_a_ui")
-    st.selectbox("Router B", sorted(POS), index=min(1, len(POS)-1),
-                 key="extremo_b_ui")
-    st.number_input("Peso de la conexión nueva", min_value=1,
-                    max_value=100000, value=50, key="peso_conexion_ui")
-    if st.session_state.extremo_a_ui == st.session_state.extremo_b_ui:
-        st.caption("Selecciona dos routers distintos.")
-    st.button("🔗 Añadir / actualizar conexión", on_click=agregar_conexion,
-              disabled=(st.session_state.extremo_a_ui == st.session_state.extremo_b_ui),
-              use_container_width=True)
+    st.header("3. Simulación en tiempo real")
+    st.selectbox("Regla de tráfico", list(ESCENARIOS), index=1, key="escenario")
+    intensidad = st.slider("Intensidad del cambio (%)", 5, 100, 35)
+    st.toggle("▶ Activar simulación", key="en_vivo")
+    if st.button("🎲 Generar valores nuevos", use_container_width=True):
+        for d in s.enlaces.values():
+            if not d["fijo"]:
+                activo = d["activo"]
+                d.update(metricas_aleatorias(s.escenario))
+                d["activo"] = activo
+        st.rerun()
+    st.caption("Cada segundo varían las métricas de enlaces no bloqueados. "
+               "Los datos son simulados, no telemetría real.")
+    st.divider()
 
-    with st.expander("Eliminar router"):
-        st.selectbox("Router que deseas quitar", sorted(POS), key="eliminar_nodo_ui")
-        st.button("🗑 Eliminar router y sus enlaces", on_click=eliminar_router,
-                  disabled=len(POS) <= 2, use_container_width=True)
+    st.header("4. Construir y modificar el grafo")
+    st.caption(f"{len(s.posiciones)} routers · {len(s.enlaces)} enlaces · máximo {MAX_NODOS} routers")
+
+    with st.expander("➕ Añadir router", expanded=True):
+        with st.form("form_nodo", clear_on_submit=False):
+            nombre_sugerido = nuevo_nombre()
+            nombre = st.text_input("Nombre del nuevo router", value=nombre_sugerido,
+                                   max_chars=16)
+            conectar = st.selectbox("Conectarlo inicialmente con", nodos)
+            peso_nuevo = st.number_input("Peso del enlace inicial", 1, 100000, 40)
+            crear_nodo = st.form_submit_button("Añadir router", use_container_width=True)
+        if crear_nodo:
+            nombre = nombre.strip().upper()
+            if not nombre or any(c.isspace() for c in nombre):
+                st.error("El nombre no puede estar vacío ni contener espacios.")
+            elif nombre in s.posiciones:
+                st.error("Ese router ya existe.")
+            elif len(s.posiciones) >= MAX_NODOS:
+                st.error("Se alcanzó el máximo de routers.")
+            else:
+                s.posiciones[nombre] = nueva_posicion()
+                d = metricas_aleatorias(s.escenario)
+                d["peso"] = int(peso_nuevo)
+                s.enlaces[clave(nombre, conectar)] = d
+                st.rerun()
+
+    with st.expander("🔗 Añadir o cambiar conexión"):
+        with st.form("form_conexion"):
+            a = st.selectbox("Primer router", nodos)
+            b = st.selectbox("Segundo router", nodos, index=min(1, len(nodos)-1))
+            peso = st.number_input("Peso inicial", 1, 100000, 50)
+            crear_conexion = st.form_submit_button("Guardar conexión", use_container_width=True)
+        if crear_conexion:
+            if a == b:
+                st.error("Selecciona dos routers diferentes.")
+            else:
+                d = s.enlaces.get(clave(a, b), metricas_aleatorias(s.escenario))
+                d["peso"] = int(peso)
+                d["activo"] = True
+                s.enlaces[clave(a, b)] = d
+                st.rerun()
+
+    with st.expander("🧭 Mover un router"):
+        with st.form("form_posicion"):
+            nodo_mover = st.selectbox("Router a mover", nodos)
+            px, py = s.posiciones[nodo_mover]
+            x = st.number_input("Coordenada X", value=float(px), step=0.5)
+            y = st.number_input("Coordenada Y", value=float(py), step=0.5)
+            mover = st.form_submit_button("Actualizar posición", use_container_width=True)
+        if mover:
+            s.posiciones[nodo_mover] = (float(x), float(y))
+            st.rerun()
+
+    with st.expander("🗑 Eliminar router"):
+        with st.form("form_eliminar_nodo"):
+            quitar = st.selectbox("Router", nodos)
+            confirmar = st.checkbox("Confirmo que deseo eliminarlo")
+            eliminar = st.form_submit_button("Eliminar router", use_container_width=True)
+        if eliminar and confirmar and len(nodos) > 2:
+            del s.posiciones[quitar]
+            s.enlaces = {k: d for k, d in s.enlaces.items() if quitar not in k}
+            restantes = sorted(s.posiciones)
+            if s.origen == quitar:
+                s.origen = restantes[0]
+            if s.destino == quitar:
+                s.destino = restantes[-1]
+            st.rerun()
 
     st.divider()
-    st.subheader("Editar enlace")
-    if st.session_state.enlaces:
-        st.selectbox("Conexión", [f"{a} - {b}" for a, b in sorted(st.session_state.enlaces)],
-                     key="enlace_ui", on_change=sincronizar_editor)
-        dato = st.session_state.enlaces[enlace_actual()]
-        st.number_input("Peso", min_value=1, max_value=100000, step=1,
-                        key="peso_ui", on_change=guardar_peso,
-                        disabled=st.session_state.activo_sim)
-        st.checkbox("Fijar este peso", key="fijo_ui", on_change=guardar_bloqueo)
-        st.button("Reparar enlace" if not dato["activo"] else "Dañar enlace",
-                  on_click=cambiar_enlace, use_container_width=True)
-        st.button("🗑 Borrar esta conexión", on_click=borrar_conexion,
-                  use_container_width=True)
+    st.header("5. Editar métricas de cada enlace")
+    st.caption("Pausa la simulación para editar. Puedes fijar enlaces para que no cambien.")
+    opciones = sorted(s.enlaces)
+    if opciones:
+        elegido = st.selectbox("Enlace", opciones,
+                              format_func=lambda e: f"{e[0]} – {e[1]}")
+        d = s.enlaces[elegido]
+        with st.form("form_metricas"):
+            peso = st.number_input("Peso manual", 1, 100000, int(d["peso"]))
+            retardo = st.number_input("Retardo (ms)", 0.01, 10000.0,
+                                      float(d["retardo"]), step=1.0)
+            ancho = st.number_input("Ancho de banda (Mbps)", 0.1, 100000.0,
+                                    float(d["ancho"]), step=10.0)
+            perdida = st.number_input("Pérdida (%)", 0.0, 100.0,
+                                      float(d["perdida"]), step=0.1)
+            jitter = st.number_input("Jitter (ms)", 0.01, 10000.0,
+                                     float(d["jitter"]), step=1.0)
+            activo = st.checkbox("Enlace activo", value=bool(d["activo"]))
+            fijo = st.checkbox("Bloquear métricas", value=bool(d["fijo"]))
+            guardar = st.form_submit_button("💾 Aplicar cambios",
+                                             disabled=s.en_vivo, use_container_width=True)
+        if guardar:
+            d.update({"peso": int(peso), "retardo": float(retardo),
+                      "ancho": float(ancho), "perdida": float(perdida),
+                      "jitter": float(jitter), "activo": activo, "fijo": fijo})
+            st.rerun()
+        if st.button("Eliminar este enlace", use_container_width=True):
+            del s.enlaces[elegido]
+            st.rerun()
     else:
-        st.warning("No hay enlaces. Crea una conexión para empezar.")
-    st.button("Restablecer red inicial (15 routers)", on_click=reiniciar,
-              use_container_width=True)
-    st.caption("Pausa para editar. Un peso fijo no varía en la simulación.")
+        st.warning("No hay enlaces. Crea uno en la sección 4.")
+    if st.button("↩ Restablecer topología inicial", use_container_width=True):
+        reiniciar()
+        st.rerun()
 
 
 @st.fragment(run_every="1s")
-def panel_en_vivo():
-    if st.session_state.activo_sim:
-        variar_pesos(variacion)
-        st.session_state.ciclos += 1
+def panel():
+    if s.en_vivo:
+        actualizar_escenario(s.escenario, intensidad)
+        s.ciclos += 1
+    g = construir_grafo(s.modo, s.coef)
+    rutas = calcular_rutas(g, s.origen, s.destino)
+    dist, siguiente = arbol_sumidero(g, s.destino)
+    caidos = sum(not d["activo"] for d in s.enlaces.values())
 
-    g = grafo()
-    rutas, pasos = tres_rutas(g, origen, destino)
-    distancias, siguientes = dijkstra(g, destino)
-    caidos = sum(not x["activo"] for x in st.session_state.enlaces.values())
-
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Routers", len(POS))
-    k2.metric("Enlaces activos", len(st.session_state.enlaces) - caidos)
-    k3.metric("Enlaces caídos", caidos)
-    k4.metric("Ciclos", st.session_state.ciclos)
-
-    if st.session_state.activo_sim:
-        st.success("🟢 Simulación activa: pesos actualizados cada segundo")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Routers", len(s.posiciones))
+    m2.metric("Enlaces activos", len(s.enlaces)-caidos)
+    m3.metric("Enlaces caídos", caidos)
+    m4.metric("Ciclos", s.ciclos)
+    if s.en_vivo:
+        st.success("🟢 EN VIVO: métricas y rutas se recalculan cada segundo")
     else:
-        st.info("⏸ Pausado: edita pesos o enlaces en la barra lateral")
+        st.info("⏸ PAUSADO: puedes editar la red y sus métricas")
 
     izquierda, derecha = st.columns([3, 1])
     with izquierda:
-        st.plotly_chart(dibujar(rutas, siguientes, vista, origen, destino),
-                        use_container_width=True)
-        st.caption("Rojo: primaria · Azul: secundaria · Verde: terciaria · Morado: árbol")
+        st.plotly_chart(figura(g, rutas, siguiente, vista, s.origen, s.destino),
+                        use_container_width=True,
+                        config={"scrollZoom": True, "displaylogo": False})
+        st.caption("Rojo: primaria · Azul: secundaria · Verde: terciaria · Morado: Sink Tree")
     with derecha:
-        st.subheader("Tres rutas de menor costo")
-        for i, nombre in enumerate(["Primaria", "Secundaria", "Terciaria"]):
-            if i < len(rutas):
-                costo, camino = rutas[i]
-                st.markdown(f"**{i+1}. {nombre} · Costo {costo}**")
-                st.caption(" → ".join(camino) + f" · {len(camino)-1} saltos")
-            else:
-                st.write(f"{nombre}: no disponible")
-        st.subheader("Pesos actuales")
+        st.subheader("3 rutas óptimas")
+        if not rutas:
+            st.warning("No existe una ruta activa entre origen y destino.")
+        for i, (costo, camino) in enumerate(rutas):
+            st.markdown(f"**{i+1}. {['Primaria','Secundaria','Terciaria'][i]} · {costo:.2f}**")
+            st.caption(" → ".join(camino) + f" · {len(camino)-1} saltos")
+        st.caption("El costo corresponde a la métrica seleccionada, no necesariamente a milisegundos.")
+        st.subheader("Estado de enlaces")
         st.dataframe([
-            {"Enlace": f"{a}–{b}", "Peso": dato["peso"],
-             "Activo": dato["activo"], "Fijo": dato["fijo"]}
-            for (a, b), dato in sorted(st.session_state.enlaces.items())
-        ], hide_index=True, height=295)
+            {"Enlace": f"{a}–{b}", "Peso": d["peso"],
+             "Retardo ms": d["retardo"], "Mbps": d["ancho"],
+             "Pérdida %": d["perdida"], "Jitter ms": d["jitter"],
+             "Activo": d["activo"], "Fijo": d["fijo"]}
+            for (a, b), d in sorted(s.enlaces.items())
+        ], hide_index=True, height=300)
 
-    t1, t2 = st.tabs(["🌳 Tabla del Sink Tree", "🧠 Decisiones del algoritmo"])
+    t1, t2, t3 = st.tabs(["🌳 Árbol sumidero", "📐 Comparación de rutas",
+                           "🧠 Teoría y cálculo"])
     with t1:
+        st.write(f"**Raíz del árbol: {s.destino}.** Cada router alcanzable tiene "
+                 "un siguiente salto hacia ese destino, calculado con Dijkstra.")
         st.dataframe([
-            {"Router": n,
-             "Distancia a " + destino: "∞" if math.isinf(distancias[n]) else int(distancias[n]),
-             "Siguiente salto": siguientes.get(n, "—")}
-            for n in sorted(POS)
+            {"Router": n, "Costo hasta destino": round(dist[n], 2) if n in dist else "∞",
+             "Siguiente salto": siguiente.get(n, "—")}
+            for n in sorted(s.posiciones)
         ], hide_index=True, use_container_width=True)
-        st.caption("Dijkstra calcula la distancia mínima desde cada router al destino.")
     with t2:
-        st.dataframe(pasos, hide_index=True, height=340)
-        st.caption("Búsqueda de costo uniforme: elige primero el camino pendiente más barato.")
+        tabla = []
+        for i, (costo, camino) in enumerate(rutas):
+            aristas = [s.enlaces[clave(a, b)] for a, b in zip(camino, camino[1:])]
+            tabla.append({
+                "Ruta": i+1, "Camino": " → ".join(camino),
+                "Costo": round(costo, 2), "Saltos": len(camino)-1,
+                "Retardo total (ms)": round(sum(d["retardo"] for d in aristas), 2),
+                "Ancho mínimo (Mbps)": round(min((d["ancho"] for d in aristas), default=0), 2),
+                "Pérdida extremo a extremo (%)": round(
+                    100*(1-math.prod(1-d["perdida"]/100 for d in aristas)), 2)
+            })
+        st.dataframe(tabla, hide_index=True, use_container_width=True)
+    with t3:
+        st.markdown(
+            "**Modelo:** grafo no dirigido con enlaces de costo positivo. "
+            "Las tres rutas simples más económicas se generan con el método de Yen "
+            "de NetworkX. Dijkstra construye el árbol de caminos mínimos hacia "
+            "el destino seleccionado.\\n\\n"
+            "**Costo adaptativo por enlace:** "
+            "\\n\\n"
+            "\`w_s·1 + w_p·(peso/100) + w_r·(retardo/50) "
+            "+ w_b·(100/ancho_Mbps) + w_l·(pérdida_%/2) "
+            "+ w_j·(jitter/10)\`\\n\\n"
+            "Los coeficientes se ajustan en la barra lateral. "
+            "En el modo ancho de banda se minimiza la suma de penalizaciones "
+            "inversas; **no** equivale a maximizar estrictamente el ancho de "
+            "banda mínimo de la ruta. Los valores aleatorios representan "
+            "escenarios educativos, no mediciones reales de una red."
+        )
 
-    if st.session_state.activo_sim:
-        st.session_state.historial.append({
-            "Ciclo": st.session_state.ciclos,
-            "Costo mínimo": rutas[0][0] if rutas else None
-        })
-        st.session_state.historial = st.session_state.historial[-120:]
-
-    if len(st.session_state.historial) > 1:
-        st.subheader("Evolución del costo de la mejor ruta")
-        st.line_chart(st.session_state.historial, x="Ciclo", y="Costo mínimo")
+    if s.en_vivo:
+        s.historial.append({"Ciclo": s.ciclos,
+                            "Costo mínimo": rutas[0][0] if rutas else None})
+        s.historial = s.historial[-120:]
+    if len(s.historial) > 1:
+        st.subheader("📈 Evolución del costo óptimo")
+        st.line_chart(s.historial, x="Ciclo", y="Costo mínimo")
 
 
-panel_en_vivo()
-st.caption("Simulador académico. Los costos son simulados; no es telemetría Cisco real.")
+panel()
+st.caption("Proyecto académico de teoría de grafos y enrutamiento adaptativo · Python + Streamlit")
